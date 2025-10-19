@@ -1,0 +1,86 @@
+import requests
+from bs4 import BeautifulSoup
+import json
+import os
+import sys
+
+# Config
+BLOG_URL = "https://kingshot.net/blog"
+STORED_FILE = "latest_post.json"
+DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")  # set as env var
+
+if not DISCORD_WEBHOOK_URL:
+    print("Error: Please set DISCORD_WEBHOOK_URL environment variable.")
+    sys.exit(1)
+
+def fetch_latest_post():
+    resp = requests.get(BLOG_URL, timeout=10)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    # Inspect the page: the blog list shows entries like:
+    # <a …> … <h3>…title…</h3> … <span>date</span>
+    # We'll pick the first post under "Latest Posts".
+
+    # locate the section: maybe use the selector for list items of posts
+    post_li = soup.select_one("div#main-content li")  # you may need to adjust selector
+    if not post_li:
+        raise RuntimeError("Could not locate latest post element")
+
+    title_elem = post_li.select_one("h3")
+    link_elem = post_li.select_one("a")
+    date_elem = post_li.select_one("span")  # adjust if needed
+
+    title = title_elem.get_text(strip=True)
+    link = link_elem['href']
+    if link.startswith("/"):
+        link = "https://kingshot.net" + link
+    date = date_elem.get_text(strip=True)
+
+    return {
+        "title": title,
+        "link": link,
+        "date": date
+    }
+
+def read_stored():
+    if not os.path.exists(STORED_FILE):
+        return None
+    with open(STORED_FILE, "r") as f:
+        return json.load(f)
+
+def write_stored(post):
+    with open(STORED_FILE, "w") as f:
+        json.dump(post, f)
+
+def send_discord_notification(post):
+    data = {
+        "content": f"🆕 New blog post: **{post['title']}**\n{post['link']}\n_Published: {post['date']}_"
+    }
+    resp = requests.post(DISCORD_WEBHOOK_URL, json=data)
+    resp.raise_for_status()
+
+def main():
+    try:
+        latest = fetch_latest_post()
+    except Exception as e:
+        print("Error fetching latest post:", e)
+        sys.exit(1)
+
+    stored = read_stored()
+
+    if stored is None:
+        # first run, just store and don't notify
+        write_stored(latest)
+        print("Stored latest post for first run:", latest)
+    else:
+        # compare
+        if latest['link'] != stored['link']:
+            print("New post detected!", latest)
+            send_discord_notification(latest)
+            write_stored(latest)
+        else:
+            print("No new post.")
+
+if __name__ == "__main__":
+    main()
